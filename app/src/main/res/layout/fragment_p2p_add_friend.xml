@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="25dp"
+        android:gravity="bottom"
+        android:paddingStart="5dp"
+        android:paddingLeft="5dp"
+        android:paddingBottom="2dp"
+        android:background="#BCD2EE"
+        android:text="本机设备："
+        android:textSize="10sp"/>
+
+
+    <include layout="@layout/item_p2p_device"/>
+
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="25dp"
+        android:layout_marginTop="10dp"
+        android:gravity="bottom"
+        android:paddingStart="5dp"
+        android:paddingLeft="5dp"
+        android:paddingBottom="2dp"
+        android:background="#BCD2EE"
+        android:text="周围设备："
+        android:textSize="10sp"/>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="0.5dp"
+        android:background="@drawable/divider_recycler_view"/>
+
+    <android.support.v7.widget.RecyclerView
+        android:id="@+id/recycler_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+    </android.support.v7.widget.RecyclerView>
+</LinearLayout>
