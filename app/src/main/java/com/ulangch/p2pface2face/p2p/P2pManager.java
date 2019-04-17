@@ -46,7 +46,8 @@ import java.util.List;
  * 04-17 13:25:09.885 14125 14125 I P2pManager: onReceive: android.net.wifi.p2p.STATE_CHANGED-true
  * 04-17 13:25:09.890 14125 14125 I P2pManager: onReceive: android.net.wifi.p2p.THIS_DEVICE_CHANGED-Device: 小米手机
  */
-public class P2pManager extends ViewModel implements WifiP2pManager.ActionListener {
+public class P2pManager extends ViewModel implements
+        WifiP2pManager.ActionListener, WifiP2pManager.ChannelListener {
 
     private static final String TAG = "P2pManager";
 
@@ -66,6 +67,8 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
     private boolean mWifiEnabled;
     private boolean mNeedDiscover;
 
+    private int mRetryDiscoverTimes;
+
     private MutableLiveData<P2pDevice> mThisDevice = new MutableLiveData<>();
     private MutableLiveData<List<P2pDevice>> mP2pDevices = new MutableLiveData<>();
     private MutableLiveData<Pair<Boolean, Integer>> mP2pState = new MutableLiveData<>();
@@ -80,6 +83,8 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
 
     private static final int MAX_WAIT_WIFI_TIME_MILLS = 5 * 1000; // 5s
     private static final int MAX_WAIT_DISCOVER_TIME_MILLS = 3 * 1000; // 3s
+    private static final int MAX_RETRY_DISCOVER_TIMES_1 = 2; // discover失败时，最大重试次数（不stop discover）
+    private static final int MAX_RETRY_DISCOVER_TIMES_2 = 4; // discover失败时，最大重试次数（stop discover）
 
     public static final String[] P2P_PERMISSIONS = {
             Manifest.permission.ACCESS_FINE_LOCATION,
@@ -115,10 +120,13 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
                 boolean started =  intent.getIntExtra(WifiP2pManager.EXTRA_DISCOVERY_STATE,
                         WifiP2pManager.WIFI_P2P_DISCOVERY_STOPPED)
                         == WifiP2pManager.WIFI_P2P_DISCOVERY_STARTED;
-                Log.i(TAG, "onReceive: " + action + "-" + started);
+                Log.i(TAG, "onReceive: " + action + "-" + intent.getIntExtra(WifiP2pManager.EXTRA_DISCOVERY_STATE,
+                        WifiP2pManager.WIFI_P2P_DISCOVERY_STOPPED));
                 setP2pDiscoverState(started, mWifiEnabled ? NO_ERROR : ERROR_WIFI_DISABLED);
                 if (!started && mNeedDiscover) {
                     startDiscover();
+                } else if (started) {
+                    mRetryDiscoverTimes = 0;
                 }
             } else if (WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION.equals(action)) {
                 WifiP2pDeviceList devices = intent.getParcelableExtra(
@@ -175,17 +183,14 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
         });
     }
 
-    public void pollP2pDevices(final Context context) {
+    public void pollP2pDevices() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             new Handler().post(new Runnable() {
                 @Override public void run() {
-                    pollP2pDevices(context);
+                    pollP2pDevices();
                 }
             });
         } else {
-            if (mContext == null) {
-                mContext = context;
-            }
             startDiscover();
         }
     }
@@ -257,12 +262,13 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
             releaseP2pManager();
             return;
         }
-        mChannel = mWifiP2pManager.initialize(appContext, Looper.getMainLooper(), null);
+        mChannel = mWifiP2pManager.initialize(appContext, Looper.getMainLooper(), this);
         if (mChannel == null) {
             Log.e(TAG, "Fail to setup connection with WifiP2pService");
             releaseP2pManager();
             return;
         }
+        mRetryDiscoverTimes = 0;
         mInitialized = true;
     }
 
@@ -284,6 +290,7 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
         mWifiEnabled = false;
         mNeedDiscover = false;
         mInitialized = false;
+        mRetryDiscoverTimes = 0;
     }
 
     private void registerP2pReceiver() {
@@ -314,7 +321,6 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
 
     private boolean checkPermission() {
         if (!PermissionUtils.checkPermissions((Activity) mContext, P2P_PERMISSIONS)) {
-            Log.e(TAG, "No WifiP2p permissions");
             return false;
         }
         return true;
@@ -327,7 +333,13 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
             return true;
         }
         mWifiEnabled = false;
-        mWifiManager.setWifiEnabled(true);
+        // 国内很多厂商会hold住setWifiEnabled的Binder调用
+        // 在主线程中调用可能会产生ANR
+        new Thread(new Runnable() {
+            @Override public void run() {
+                mWifiManager.setWifiEnabled(true);
+            }
+        }).start();
         mTimeoutHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -352,31 +364,58 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
             Log.i(TAG, "Being discovering now");
             setP2pDiscoverState(true, NO_ERROR);
         } else if (!checkPermission()) {
+            Log.e(TAG, "No WiFi permission");
             setP2pDiscoverState(false, ERROR_NO_PERMISSION);
         } else if (!checkWifiState()) {
             // WiFi开启出现未知异常
             // 需要等待WiFi开启
+            Log.e(TAG, "Need to wait WiFi");
         } else {
+            Log.i(TAG, "Real startDiscover");
             mWifiP2pManager.discoverPeers(mChannel, this);
-            mTimeoutHandler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (!isP2pDiscovering()) {
-                        setP2pDiscoverState(false, ERROR_START_DISCOVER_TIMEOUT);
-                    }
-                }
-            }, MAX_WAIT_DISCOVER_TIME_MILLS);
+            mTimeoutHandler.postDelayed(retryDiscoverTask(), MAX_WAIT_DISCOVER_TIME_MILLS);
         }
+    }
+
+    private Runnable retryDiscoverTask() {
+        Runnable runnable = new Runnable() {
+            @Override
+            public void run() {
+                if (isP2pDiscovering() || !mNeedDiscover) {
+                    return;
+                }
+                mRetryDiscoverTimes++;
+                Log.i(TAG, "Retry to discover for: " + mRetryDiscoverTimes + " times");
+                if (mRetryDiscoverTimes <= MAX_RETRY_DISCOVER_TIMES_1) {
+                    startDiscover();
+                } else if (mRetryDiscoverTimes <= MAX_RETRY_DISCOVER_TIMES_2) {
+                    stopDiscover(false);
+                    startDiscover();
+                } else {
+                    setP2pDiscoverState(false, ERROR_START_DISCOVER_TIMEOUT);
+                    Log.e(TAG, "Fail to discover for max times");
+                }
+            }
+        };
+        return runnable;
     }
 
     private void stopDiscover(boolean release) {
         Log.i(TAG, "stopDiscover");
         mNeedDiscover = false;
         if (isP2pDiscovering()) {
-            mWifiP2pManager.stopPeerDiscovery(mChannel, this);
+            mWifiP2pManager.stopPeerDiscovery(mChannel, null);
         }
         if (release) {
             releaseP2pManager();
+        }
+    }
+
+    @Override
+    public void onChannelDisconnected() {
+        Log.i(TAG, "WifiP2p channel disconnected");
+        if (mInitialized && mNeedDiscover) {
+            mWifiP2pManager.initialize(mContext.getApplicationContext(), Looper.getMainLooper(), this);
         }
     }
 
@@ -390,7 +429,6 @@ public class P2pManager extends ViewModel implements WifiP2pManager.ActionListen
     @Override
     public void onFailure(int error) {
         Log.e(TAG, "Fail" + error);
-        // setP2pDiscoverState(false, error);
     }
 
     @Override

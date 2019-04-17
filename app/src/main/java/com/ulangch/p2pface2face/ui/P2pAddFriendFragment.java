@@ -1,18 +1,14 @@
 package com.ulangch.p2pface2face.ui;
 
-import android.Manifest;
-import android.graphics.Color;
-import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
+import android.os.Handler;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
-import android.support.v4.app.ActivityCompat;
 import android.support.v4.app.Fragment;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.widget.DividerItemDecoration;
 import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
-import android.text.TextUtils;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -24,7 +20,6 @@ import com.ulangch.p2pface2face.R;
 import com.ulangch.p2pface2face.adapter.P2pDeviceAdapter;
 import com.ulangch.p2pface2face.model.P2pDevice;
 import com.ulangch.p2pface2face.p2p.P2pManager;
-import com.ulangch.p2pface2face.utils.HardwareUtils;
 import com.ulangch.p2pface2face.utils.PermissionUtils;
 
 import java.util.Arrays;
@@ -45,6 +40,7 @@ public class P2pAddFriendFragment extends Fragment implements P2pManager.IP2pCal
 
     private TextView mName;
     private TextView mAddress;
+    private TextView mStatusView;
 
     public static P2pAddFriendFragment newInstance() {
         return new P2pAddFriendFragment();
@@ -59,6 +55,7 @@ public class P2pAddFriendFragment extends Fragment implements P2pManager.IP2pCal
         mName = root.findViewById(R.id.name);
         mAddress = root.findViewById(R.id.address);
         mRecyclerView = root.findViewById(R.id.recycler_view);
+        mStatusView = root.findViewById(R.id.status_view);
         mRecyclerView.setLayoutManager(new LinearLayoutManager(getContext(), LinearLayoutManager.VERTICAL, false));
         DividerItemDecoration decor = new DividerItemDecoration(getContext(), DividerItemDecoration.VERTICAL);
         decor.setDrawable(ContextCompat.getDrawable(getContext(), R.drawable.divider_recycler_view));
@@ -103,7 +100,46 @@ public class P2pAddFriendFragment extends Fragment implements P2pManager.IP2pCal
     }
 
     private void pollP2pDevice() {
-        P2pManager.of(getActivity()).pollP2pDevices(getActivity());
+        setStatusView(true);
+        P2pManager.of(getActivity()).pollP2pDevices();
+    }
+
+    private int mDotCount = 0;
+    private static final int REFRESH_TIME = 400;
+    private Handler mHandler;
+
+    private void setStatusView(boolean visible) {
+        if (!visible) {
+            mStatusView.setVisibility(View.GONE);
+            if (mHandler != null) {
+                mHandler.removeCallbacksAndMessages(null);
+            }
+            mDotCount = 0;
+        } else {
+            mStatusView.setVisibility(View.VISIBLE);
+            if (mHandler == null) {
+                mHandler = new Handler();
+            }
+            mDotCount++;
+            if (mDotCount > 4) {
+                mDotCount = 1;
+            }
+            mHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (mDotCount == 1) {
+                        mStatusView.setText("正在扫描周围设备.");
+                    } else if (mDotCount == 2) {
+                        mStatusView.setText("正在扫描周围设备..");
+                    } else if (mDotCount == 3) {
+                        mStatusView.setText("正在扫描周围设备...");
+                    } else if (mDotCount == 4) {
+                        mStatusView.setText("正在扫描周围设备....");
+                    }
+                    setStatusView(true);
+                }
+            }, REFRESH_TIME);
+        }
     }
 
     @Override
@@ -115,6 +151,9 @@ public class P2pAddFriendFragment extends Fragment implements P2pManager.IP2pCal
     @Override
     public void onP2pChanged(List<P2pDevice> list) {
         Log.i(TAG, "onP2pChanged: " + list);
+        if (list != null && !list.isEmpty()) {
+            setStatusView(false);
+        }
         mAdapter.setData(list);
     }
 
